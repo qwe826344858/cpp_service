@@ -1,0 +1,41 @@
+# Prerequisites
+*.d
+*.obj
+*.idb
+*.pdb
+*.ilk
+*.exe
+*.dll
+*.lib
+*.so
+*.dylib
+*.a
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+CTestTestfile.cmake
+*.cmake
+
+# Build
+build/
+bin/
+lib/
+out/
+
+# IDE
+.vscode/
+.idea/
+*.sln
+*.vcxproj
+*.vcxproj.filters
+*.user
+
+# System
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
