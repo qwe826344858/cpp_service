@@ -1,60 +1,60 @@
 ---
 name: "cpp-vad-service"
-description: "Manages the C++ VAD (Voice Activity Detection) service. Invoke when the user wants to start, stop, test, or check the status of the VAD service."
+description: "管理 C++ VAD (语音活动检测) 服务。当用户需要启动、停止、测试或检查 VAD 服务状态时调用此技能。"
 ---
 
-# C++ VAD Service Skill
+# C++ VAD 服务管理技能
 
-This skill allows you to manage the high-performance C++ Voice Activity Detection (VAD) service. The service uses Silero VAD (ONNX) to detect speech in real-time audio streams via WebSocket.
+本技能允许你管理高性能的 C++ 语音活动检测 (VAD) 服务。该服务基于 Silero VAD (ONNX)，通过 WebSocket 对实时音频流进行语音检测。
 
-## Capabilities
+## 功能列表
 
-1.  **Start Service**: Launch the VAD service using Docker Compose.
-2.  **Stop Service**: Stop the VAD service.
-3.  **Run Tests**: Execute the Python test client to verify VAD functionality.
-4.  **View Logs**: Check the service logs.
+1.  **启动服务**: 使用 Docker Compose 启动 VAD 服务。
+2.  **停止服务**: 停止 VAD 服务。
+3.  **运行测试**: 执行 Python 测试客户端以验证 VAD 功能。
+4.  **查看日志**: 检查服务运行日志。
 
-## Usage
+## 使用指南
 
-### 1. Start Service
-Use this command to build and start the service in the background:
+### 1. 启动服务
+使用以下命令在后台构建并启动服务：
 ```bash
 docker compose up -d --build
 ```
-*Wait for a few seconds for the service to initialize.*
+*启动后请等待几秒钟让服务完成初始化。*
 
-### 2. Check Service Status
-Verify if the container is running:
+### 2. 检查服务状态
+验证容器是否正在运行：
 ```bash
 docker ps | grep cpp_service
 ```
 
-### 3. Run Tests
-**Prerequisite**: The service must be running (see "Start Service").
+### 3. 运行测试
+**前提条件**: 服务必须处于运行状态（参考"启动服务"）。
 
-Run the integrated Python test client (sends `test_long.pcm`):
+运行内置的 Python 测试客户端（发送 `test_long.pcm`）：
 ```bash
 python3 test/test_client.py
 ```
-*Expected Output*: You should see `VAD_BEGIN`, `SPEAKING`, and `END_SPEAKING` JSON messages in the output.
+*预期输出*: 你应该在输出中看到 `VAD_BEGIN`、`SPEAKING` 和 `END_SPEAKING` 的 JSON 消息。
 
-### 4. View Logs
-To debug or see server-side processing:
+### 4. 查看日志
+调试或查看服务端处理日志：
 ```bash
 docker compose logs -f vad_server
 ```
 
-### 5. Stop Service
-To clean up resources:
+### 5. 停止服务
+清理资源并停止服务：
 ```bash
 docker compose down
 ```
 
-## Protocol Overview
+## 协议概览
 - **URL**: `ws://localhost:9002`
-- **Input**: 16kHz, 16-bit, Mono PCM binary stream.
-- **Output**: JSON messages.
-  - `VAD_BEGIN`: Speech started (includes `new_session` timestamp + audio).
-  - `SPEAKING`: Speech continuing (includes audio chunk).
-  - `END_SPEAKING`: Speech ended (includes full audio segment).
-  - `SILENCE`: Silence detected (no audio).
+- **输入**: 16kHz, 16-bit, 单声道 PCM 二进制流。
+- **输出**: JSON 消息。
+  - `VAD_BEGIN`: 检测到语音开始 (包含 `new_session` 时间戳 + 音频数据)。
+  - `SPEAKING`: 语音持续中 (包含当前音频块)。
+  - `END_SPEAKING`: 语音结束 (包含该段完整音频)。
+  - `SILENCE`: 静音状态 (无音频)。
