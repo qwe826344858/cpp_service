@@ -4,7 +4,6 @@ import time
 import math
 import struct
 import json
-import base64
 
 # 配置
 URI = "ws://localhost:9002"
@@ -26,19 +25,6 @@ def generate_silence(duration_ms):
     num_samples = int(SAMPLE_RATE * duration_ms / 1000)
     return bytearray(num_samples * 2)
 
-def send_packet(ws, audio_bytes, uid="abc_123"):
-    audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
-    data = {
-        "uid": uid,
-        "connect_session": "1770370339",
-        "current_session": str(int(time.time() * 1000)),
-        "data": {
-            "bussin": {},
-            "audio": audio_b64
-        }
-    }
-    ws.send(json.dumps(data))
-
 def on_message(ws, message):
     print(f"< Received: {message}")
 
@@ -55,33 +41,22 @@ def on_open(ws):
         # 1. 发送 1秒静音
         print("> Sending 1s Silence...")
         for _ in range(50): # 50 * 20ms = 1000ms
-            send_packet(ws, generate_silence(FRAME_DURATION_MS))
+            ws.send(generate_silence(FRAME_DURATION_MS), opcode=websocket.ABNF.OPCODE_BINARY)
             time.sleep(0.02)
         
-        # 2. 发送 语音录音文件
-        # Check if test.pcm exists, otherwise use sine wave
-        try:
-            with open("test_long.pcm", "rb") as f:
-                print("> Sending test.pcm...")
-                # chunk size for 20ms at 16k 16bit mono is 640 bytes
-                chunk_size = 640 
-                while True:
-                    chunk = f.read(chunk_size)
-                    if not chunk:
-                        break
-                    send_packet(ws, chunk)
-                    time.sleep(0.02)
-        except FileNotFoundError:
-             print("> test.pcm not found, sending Sine Wave...")
-             chunk = generate_sine_wave(440, FRAME_DURATION_MS, 0.8)
-             for _ in range(100):
-                 send_packet(ws, chunk)
-                 time.sleep(0.02)
+        # 2. 发送 语音 (Sine Wave)
+        print("> Sending Sine Wave...")
+        # 发送 2秒 正弦波
+        chunk = generate_sine_wave(440, FRAME_DURATION_MS, 0.8) # 20ms chunk
+        for _ in range(100): # 100 * 20ms = 2000ms
+            ws.send(chunk, opcode=websocket.ABNF.OPCODE_BINARY)
+            time.sleep(0.02)
+            
             
         # 3. 发送 1秒静音
         print("> Sending 1s Silence...")
         for _ in range(50):
-            send_packet(ws, generate_silence(FRAME_DURATION_MS))
+            ws.send(generate_silence(FRAME_DURATION_MS), opcode=websocket.ABNF.OPCODE_BINARY)
             time.sleep(0.02)
 
         print("Done sending.")

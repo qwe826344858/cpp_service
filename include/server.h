@@ -18,6 +18,10 @@ using websocketpp::connection_hdl;
 struct AudioTask {
     connection_hdl hdl;
     std::vector<uint8_t> data;
+    // Protocol metadata
+    std::string uid;
+    std::string connect_session;
+    std::string current_session;
 };
 
 class AudioServer {

@@ -1,0 +1,20 @@
+services:
+  dev:
+    build: 
+      context: .
+      dockerfile: dockerfiles/Dockerfile.v1
+    container_name: cpp_vad_dev
+    # 挂载当前目录到容器内的 /workspace
+    volumes:
+      - .:/workspace
+      - ./shared:/shared
+    # 端口映射
+    ports:
+      - "9002:9002"
+    # 让容器保持运行，以便进入容器进行操作
+    command: tail -f /dev/null
+    # 允许 ptrace (gdb 需要)
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - seccomp:unconfined

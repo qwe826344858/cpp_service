@@ -4,65 +4,11 @@
 #include <chrono>
 #include <thread>
 #include <sstream>
+#include <iomanip>
+#include "json.hpp"
+#include "base64.h"
 
-// ==========================================
-// Mock VAD Engine 实现 (基于能量检测)
-// ==========================================
-class MockVadEngine : public IVadEngine {
-public:
-    VadResult process_frame(const std::vector<float>& audio_frame) override {
-        // 1. 计算 RMS (均方根) 能量
-        float sum_squares = 0.0f;
-        for (float sample : audio_frame) {
-            sum_squares += sample * sample;
-        }
-        float rms = std::sqrt(sum_squares / audio_frame.size());
-
-        // 2. 简单的阈值判断
-        // 假设静音环境 RMS < 0.01, 说话时通常 > 0.05
-        const float SPEECH_THRESHOLD = 0.02f; 
-        
-        VadResult result;
-        result.probability = rms; // 用 RMS 模拟概率
-
-        // 简单的状态机去抖动 (实际 Silero 会复杂得多)
-        if (rms > SPEECH_THRESHOLD) {
-            if (speech_frames_count_ < 5) {
-                speech_frames_count_++;
-                result.state = (speech_frames_count_ >= 3) ? VadState::START_SPEAKING : VadState::SILENCE;
-            } else {
-                result.state = VadState::SPEAKING;
-            }
-            silence_frames_count_ = 0;
-        } else {
-            if (speech_frames_count_ > 0) {
-                silence_frames_count_++;
-                if (silence_frames_count_ > 10) { // 连续 10 帧静音才算结束
-                    result.state = VadState::END_SPEAKING;
-                    speech_frames_count_ = 0;
-                } else {
-                    result.state = VadState::SPEAKING; // 保持说话状态 (Hangover)
-                }
-            } else {
-                result.state = VadState::SILENCE;
-            }
-        }
-        
-        // 模拟计算耗时
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        
-        return result;
-    }
-
-    void reset() override {
-        speech_frames_count_ = 0;
-        silence_frames_count_ = 0;
-    }
-
-private:
-    int speech_frames_count_ = 0;
-    int silence_frames_count_ = 0;
-};
+using json = nlohmann::json;
 
 // ==========================================
 // Session 实现
@@ -70,13 +16,56 @@ private:
 
 Session::Session(std::string id, websocketpp::connection_hdl hdl) 
     : id_(id), hdl_(hdl), last_state_(VadState::SILENCE) {
-    vad_engine_ = std::make_unique<MockVadEngine>();
-    std::cout << "[Session " << id_ << "] Created" << std::endl;
+    // 确保 model 目录在运行时的相对路径正确 (通常是 build/../model)
+    std::string model_path = "../model/silero_vad.onnx";
+
+    // 使用 Silero VAD 引擎 (基于 ONNX Runtime)
+    vad_engine_ = std::make_unique<SileroVadEngine>(model_path);
+    std::cout << "[Session " << id_ << "] Created with Original VAD (SileroVadEngine)" << std::endl;
 }
 
 Session::~Session() {
     std::cout << "[Session " << id_ << "] Destroyed" << std::endl;
 }
+
+std::string Session::get_current_timestamp_us() {
+    auto now = std::chrono::system_clock::now();
+    auto duration = now.time_since_epoch();
+    auto micros = std::chrono::duration_cast<std::chrono::microseconds>(duration).count();
+    return std::to_string(micros);
+}
+
+std::string Session::build_vad_response(const std::string& vad_state, const std::string& audio_b64, const std::string& new_session) {
+    json j = {
+        {"uid", id_},
+        {"connect_session", connect_session_},
+        {"current_session", current_session_},
+        {"data", {{"vad_state", vad_state}, {"vad_audio", audio_b64}}}
+    };
+    if (!new_session.empty()) {
+        j["new_session"] = new_session;
+    }
+    return j.dump();
+}
+
+std::string Session::build_begin_response(const std::string& audio_b64) {
+    return build_vad_response("VAD_BEGIN", audio_b64, new_session_);
+}
+
+
+std::string Session::build_end_response(const std::string& audio_b64) {
+    return build_vad_response("VAD_END", audio_b64, "");
+}
+
+std::string Session::build_speaking_response(const std::string& audio_b64) {
+    return build_vad_response("SPEAKING", audio_b64, "");
+}
+
+std::string Session::build_silence_response() {
+    return build_vad_response("SILENCE", "", "");
+}
+
+
 
 std::string Session::process_audio(const std::vector<uint8_t>& raw_data) {
     // 1. 转码: PCM 16bit -> Float
@@ -96,30 +85,62 @@ std::string Session::process_audio(const std::vector<uint8_t>& raw_data) {
 
     // 3. 状态变更检测与消息生成
     std::string json_resp = "";
-    
-    // 只有状态发生重要变化时才通知 (START, END)
-    // 或者如果在 SPEAKING 状态，也可以定期发中间状态
-    if (res.state != last_state_) {
-        std::stringstream ss;
-        ss << "{";
-        ss << "\"uid\": \"" << id_ << "\", ";
+    bool state_changed = false;
+    VadState current_state = res.state;
+
+    // Handle direct transition SILENCE -> SPEAKING
+    if (current_state == VadState::SPEAKING && last_state_ == VadState::SILENCE) {
+        current_state = VadState::START_SPEAKING;
+    }
+
+    if (current_state == VadState::START_SPEAKING) {
+        std::cout << "[Session " << id_ << "] VAD START_SPEAKING detected!" << std::endl;
         
-        if (res.state == VadState::START_SPEAKING) {
-            ss << "\"event\": \"vad_start\", \"prob\": " << res.probability;
-            json_resp = ss.str() + "}";
-            last_state_ = VadState::SPEAKING; // 更新为 SPEAKING 以便后续保持
-        } 
-        else if (res.state == VadState::END_SPEAKING) {
-            ss << "\"event\": \"vad_end\", \"prob\": " << res.probability;
-            json_resp = ss.str() + "}";
-            last_state_ = VadState::SILENCE;
+        // Start buffering logic
+        audio_buffer_.clear();
+        audio_buffer_.insert(audio_buffer_.end(), raw_data.begin(), raw_data.end());
+        
+        // Generate new session timestamp
+        new_session_ = get_current_timestamp_us();
+
+        {
+            std::string audio_b64 = base64::encode(raw_data.data(), raw_data.size());
+            json_resp = build_begin_response(audio_b64);
         }
-        // 处理从 SILENCE -> SPEAKING 的直接跳变 (如果 Mock 逻辑太快)
-        else if (res.state == VadState::SPEAKING && last_state_ == VadState::SILENCE) {
-             ss << "\"event\": \"vad_start\", \"prob\": " << res.probability;
-             json_resp = ss.str() + "}";
-             last_state_ = VadState::SPEAKING;
+        
+        last_state_ = VadState::SPEAKING;
+    }
+    else if (current_state == VadState::SPEAKING) {
+        // Continue buffering
+        audio_buffer_.insert(audio_buffer_.end(), raw_data.begin(), raw_data.end());
+        
+        {
+            std::string audio_b64 = base64::encode(raw_data.data(), raw_data.size());
+            json_resp = build_speaking_response(audio_b64);
         }
+
+        last_state_ = VadState::SPEAKING;
+    }
+    else if (current_state == VadState::END_SPEAKING) {
+        std::cout << "[Session " << id_ << "] VAD END_SPEAKING detected!" << std::endl;
+        
+        // Final buffer append
+        audio_buffer_.insert(audio_buffer_.end(), raw_data.begin(), raw_data.end());
+
+        std::string audio_b64 = base64::encode(audio_buffer_.data(), audio_buffer_.size());
+        json_resp = build_end_response(audio_b64);
+
+        // Clear buffer
+        audio_buffer_.clear();
+        
+        last_state_ = VadState::SILENCE;
+    }
+    else { // SILENCE
+        // Clear buffer if we were somehow buffering in silence (safety)
+        if (!audio_buffer_.empty()) audio_buffer_.clear();
+        json_resp = build_silence_response();
+        
+        last_state_ = VadState::SILENCE;
     }
 
     return json_resp;

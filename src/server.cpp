@@ -1,6 +1,10 @@
 #include "server.h"
 #include <iostream>
 #include <functional>
+#include "json.hpp"
+#include "base64.h"
+
+using json = nlohmann::json;
 
 AudioServer::AudioServer() : running_(false) {
     // 1. 关闭多余日志
@@ -58,13 +62,42 @@ void AudioServer::on_close(connection_hdl hdl) {
 }
 
 void AudioServer::on_message(connection_hdl hdl, server::message_ptr msg) {
-    if (msg->get_opcode() == websocketpp::frame::opcode::binary) {
+    if (msg->get_opcode() == websocketpp::frame::opcode::text) {
+        try {
+            auto payload = msg->get_payload();
+            auto j = json::parse(payload);
+            
+            // Expected format:
+            // { 
+            //     "uid":"abc_123", 
+            //     "connect_session":"...", 
+            //     "current_session":"...", 
+            //     "data":{ "bussin":{}, "audio":"base64..." } 
+            // }
+
+            if (j.contains("data") && j["data"].contains("audio")) {
+                std::string audio_b64 = j["data"]["audio"];
+                std::vector<uint8_t> audio_data = base64::decode(audio_b64);
+                
+                AudioTask task;
+                task.hdl = hdl;
+                task.data = std::move(audio_data);
+                
+                if (j.contains("uid")) task.uid = j["uid"];
+                if (j.contains("connect_session")) task.connect_session = j["connect_session"];
+                if (j.contains("current_session")) task.current_session = j["current_session"];
+
+                task_queue_.push(std::move(task));
+            }
+        } catch (std::exception& e) {
+            std::cerr << "JSON parse error: " << e.what() << std::endl;
+        }
+    }
+    else if (msg->get_opcode() == websocketpp::frame::opcode::binary) {
         AudioTask task;
         task.hdl = hdl;
-        std::string& payload = msg->get_payload();
+        const std::string& payload = msg->get_payload();
         task.data = std::vector<uint8_t>(payload.begin(), payload.end());
-        
-        // 生产者：放入队列
         task_queue_.push(std::move(task));
     }
 }
@@ -72,12 +105,7 @@ void AudioServer::on_message(connection_hdl hdl, server::message_ptr msg) {
 void AudioServer::worker_loop() {
     std::cout << "Worker thread started." << std::endl;
     while (running_) {
-        // 从队列取任务 (假设 pop 是阻塞的，实际 SafeQueue 需要处理 stop 信号，这里简化处理)
-        // 注意：如果 SafeQueue 没有 timeout 机制，stop() 时这里的 pop 可能会卡住。
-        // 为了演示简单，我们假设 main 结束时强杀，或者在 pop 里加超时。
-        // 这里为了健壮性，我们可以让 SafeQueue 的 pop 支持超时，或者先不改动，
-        // 依赖于 task_queue_.push 一个空任务来唤醒。
-        
+        // 从队列取任务
         AudioTask task = task_queue_.pop(); 
         
         // 查找 Session
@@ -87,6 +115,18 @@ void AudioServer::worker_loop() {
             auto it = sessions_.find(task.hdl);
             if (it == sessions_.end()) continue;
             session = it->second;
+        }
+
+        // Update Metadata
+        if (!task.uid.empty() && session->get_id() != task.uid) {
+             std::cout << "[Session " << session->get_id() << "] Updating UID to " << task.uid << std::endl;
+             session->set_id(task.uid);
+        }
+        if (!task.connect_session.empty()) {
+            session->set_connect_session(task.connect_session);
+        }
+        if (!task.current_session.empty()) {
+            session->set_current_session(task.current_session);
         }
 
         // 业务处理
