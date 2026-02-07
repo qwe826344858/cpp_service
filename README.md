@@ -2,12 +2,19 @@
 
 这是一个基于 C++17、WebSocket++ 和 Boost.Asio 开发的高性能语音活动检测 (VAD) 服务。本项目采用了现代化的 Docker 容器化开发流程，确保了开发与编译环境的一致性。
 
+核心功能：
+- 基于 Silero VAD (ONNX Runtime) 的语音检测
+- WebSocket 实时流式音频处理
+- 实时 VAD 状态反馈（开始说话、说话中、结束说话）
+- 自动音频分段与回传（Base64 编码）
+
 ## 目录
 - [环境要求](#环境要求)
 - [快速开始](#快速开始)
   - [启动开发环境](#1-启动开发环境)
   - [编译项目](#2-编译项目)
   - [运行服务](#3-运行服务)
+- [WebSocket 协议](#websocket-协议)
 - [测试](#测试)
 - [项目结构](#项目结构)
 
@@ -31,7 +38,6 @@ docker compose up -d --build
 该命令会构建一个包含所有必要依赖（Boost, WebSocket++, CMake, GTest, ONNX Runtime 等）的镜像，并启动容器。
 - 源代码目录会自动挂载到容器内的 `/workspace`。
 - 服务端口 `9002` 已映射到主机。
-- Dockerfile 维护在 `dockerfiles/` 目录下。
 
 ### 2. 编译项目
 
@@ -62,36 +68,70 @@ make -j$(nproc)
 ./vad_server
 ```
 
-### 4. 运行 VAD 测试
-
-测试 VAD 模型加载与推理是否正常：
-
-```bash
-./test_vad
-```
-
 你应该会看到类似以下的输出，表明服务已在 9002 端口启动：
 ```
 [info] asio listen on: 9002
 ```
 
+## WebSocket 协议
+
+客户端通过 WebSocket 连接到 `ws://localhost:9002`。
+
+### 发送数据
+客户端发送 16kHz、16-bit、单声道 PCM 原始音频数据的二进制流。
+
+### 接收数据
+服务端返回 JSON 格式的消息，包含 VAD 状态和处理后的音频数据。
+
+**通用响应格式**：
+```json
+{
+    "uid": "会话ID",
+    "connect_session": "连接ID",
+    "current_session": "当前处理会话时间戳",
+    "new_session": "新会话时间戳 (仅 VAD_BEGIN 时存在)",
+    "data": {
+        "vad_state": "状态枚举",
+        "vad_audio": "Base64编码的PCM音频数据"
+    }
+}
+```
+
+**状态说明**：
+1.  **VAD_BEGIN**: 检测到语音开始。
+    - `vad_audio`: 包含触发 VAD 的首个音频块。
+    - `new_session`: 包含新语音段的起始时间戳。
+2.  **SPEAKING**: 语音持续中。
+    - `vad_audio`: 包含当前的音频块（流式传输）。
+3.  **END_SPEAKING**: 检测到语音结束。
+    - `vad_audio`: 包含该语音段的完整累积音频。
+4.  **SILENCE**: 静音状态。
+    - `vad_audio`: 空字符串。
+
 ## 测试
 
-本项目提供了一个 Python 客户端脚本用于功能验证。
+本项目提供 Python 脚本用于验证 VAD 功能。
 
-**注意**：你可以在宿主机运行测试脚本（需要安装 `websocket-client`），也可以在容器内运行。
-
-在容器内运行测试：
+### 1. 生成测试音频
+首先生成一个包含静音和语音的测试文件 `test_long.pcm`：
 
 ```bash
-# (确保你仍在容器内)
-cd /workspace
+python3 gen_test_audio.py
+```
 
-# 运行测试客户端
+### 2. 运行测试客户端
+运行客户端脚本，它会读取 `test_long.pcm` 并发送给服务器：
+
+```bash
 python3 test/test_client.py
 ```
 
-该脚本会模拟一个客户端连接到服务器，发送模拟音频数据，并接收 VAD 检测结果。
+该脚本会输出服务器返回的 VAD 状态日志，例如：
+```
+< Received: {"data":{"vad_state":"VAD_BEGIN", ...}}
+< Received: {"data":{"vad_state":"SPEAKING", ...}}
+< Received: {"data":{"vad_state":"VAD_END", ...}}
+```
 
 ## 项目结构
 
@@ -101,15 +141,18 @@ cpp_service/
 ├── Dockerfile           # 开发环境镜像定义
 ├── docker-compose.yml   # 容器编排配置
 ├── README.md            # 项目文档
+├── gen_test_audio.py    # 测试音频生成脚本
 ├── include/             # 头文件
 │   ├── safe_queue.h     # 线程安全队列
 │   ├── server.h         # WebSocket 服务类定义
 │   ├── session.h        # 会话管理与 VAD 逻辑
-│   └── vad_engine.h     # VAD 引擎接口
+│   ├── vad_engine.h     # VAD 引擎接口
+│   └── sherpa_vad_detector.h # (保留) Ported VAD 引擎
 ├── src/                 # 源代码
 │   ├── main.cpp         # 程序入口
 │   ├── server.cpp       # WebSocket 事件处理实现
-│   └── session.cpp      # 音频处理与状态机实现
+│   ├── session.cpp      # 音频处理与状态机实现
+│   └── sherpa_vad_detector.cpp # (保留) Ported VAD 实现
 └── test/                # 测试脚本
     └── test_client.py   # Python 测试客户端
 ```
